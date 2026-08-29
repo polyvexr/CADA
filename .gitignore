@@ -218,11 +218,12 @@ marimo/_lsp/
 __marimo__/
 
 # Streamlit
-".streamlit/secrets.toml
+.streamlit/secrets.toml
 
 # Project Specific
 results/
 models/*.bin
 models/*.pt
 models/*.pkl
-models/*.h5"
+models/*.h5
+
