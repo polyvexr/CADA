@@ -227,3 +227,4 @@ models/*.pt
 models/*.pkl
 models/*.h5
 
+.vercel
