@@ -1,20 +1,15 @@
 """
-Rolling window feature extraction for temporal dynamics in motion telemetry.
+Windowing feature utilities for backwards compatibility.
 """
 
 from typing import List, Optional
 import pandas as pd
-import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
-
 from src.config import RAW_SENSOR_COLS
 
 
 class WindowFeatureExtractor(BaseEstimator, TransformerMixin):
-    """
-    Computes rolling window statistical features (mean, std, min, max, energy)
-    over sequential sensor measurements.
-    """
+    """Computes rolling window statistics over target sensor columns."""
 
     def __init__(
         self,
@@ -34,29 +29,16 @@ class WindowFeatureExtractor(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculates windowed aggregations over target sensor columns.
-        """
         df = X.copy()
-        
         for col in self.target_cols:
             if col in df.columns:
-                rolling = df[col].rolling(window=self.window_size, min_periods=1)
-                
-                # Rolling Mean
-                df[f"{col}_roll_mean"] = rolling.mean()
-                
-                # Rolling Standard Deviation
+                roll = df[col].rolling(window=self.window_size, min_periods=1)
+                df[f"{col}_roll_mean"] = roll.mean()
                 if self.include_std:
-                    df[f"{col}_roll_std"] = rolling.std().fillna(0.0)
-                
-                # Rolling Range (Peak to Peak)
+                    df[f"{col}_roll_std"] = roll.std().fillna(0.0)
                 if self.include_range:
-                    df[f"{col}_roll_range"] = rolling.max() - rolling.min()
-                
-                # Rolling Energy
+                    df[f"{col}_roll_range"] = roll.max() - roll.min()
                 if self.include_energy:
                     df[f"{col}_roll_energy"] = (df[col]**2).rolling(window=self.window_size, min_periods=1).mean()
-
         return df
 

@@ -1,116 +1,152 @@
 """
-Kinematic feature extraction from multi-axis accelerometer and gyroscope sensor telemetry.
+Unified Kinematic & Temporal Feature Extraction Pipeline for CADA.
+Vectorized multi-scale dynamics, physical energetics, and streaming state buffer.
 """
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
+import collections
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from src.config import RAW_SENSOR_COLS, KINEMATIC_FEATURE_COLS, FEATURE_COLS
+from src.config import RAW_SENSOR_COLS
 
 
 class KinematicFeatureExtractor(BaseEstimator, TransformerMixin):
     """
-    Extracts magnitude and rate-of-change kinematic features:
-    - AccMag: Euclidean magnitude of 3-axis acceleration
-    - GyroMag: Euclidean magnitude of 3-axis angular velocity
-    - AccMag_Change: Instantaneous first-order difference of AccMag (jerk indicator)
-    - GyroMag_Change: Instantaneous first-order difference of GyroMag (angular acceleration indicator)
+    High-performance feature extractor for driving motion telemetry.
+    Extracts 3D/2D spatial kinematics, orientation angles, cross-axis energy,
+    jerk derivatives, and multi-scale temporal rolling dynamics.
     """
 
     def __init__(
         self,
+        windows: Tuple[int, ...] = (3, 7, 15, 25, 40),
         drop_initial_na: bool = False,
         fill_initial_value: float = 0.0
     ):
+        self.windows = tuple(windows)
+        self.max_window = max(self.windows) if self.windows else 40
         self.drop_initial_na = drop_initial_na
         self.fill_initial_value = fill_initial_value
-        
-        # State tracking for streaming single-sample inference
+        self._history: collections.deque = collections.deque(maxlen=self.max_window)
         self._last_acc_mag: Optional[float] = None
         self._last_gyro_mag: Optional[float] = None
 
-    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None):
+    def fit(self, X: pd.DataFrame, y: Optional[pd.Series] = None) -> "KinematicFeatureExtractor":
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Transforms a batch DataFrame of motion data by adding kinematic features.
-        """
-        df = X.copy()
+        """Vectorized batch DataFrame transformation without memory fragmentation."""
+        ax = X['AccX'].to_numpy(dtype=float)
+        ay = X['AccY'].to_numpy(dtype=float)
+        az = X['AccZ'].to_numpy(dtype=float)
+        gx = X['GyroX'].to_numpy(dtype=float)
+        gy = X['GyroY'].to_numpy(dtype=float)
+        gz = X['GyroZ'].to_numpy(dtype=float)
 
-        # Compute 3D Magnitudes
-        df['AccMag'] = np.sqrt(
-            df['AccX']**2 + df['AccY']**2 + df['AccZ']**2
-        )
-        df['GyroMag'] = np.sqrt(
-            df['GyroX']**2 + df['GyroY']**2 + df['GyroZ']**2
-        )
+        acc_mag = np.sqrt(ax**2 + ay**2 + az**2)
+        gyro_mag = np.sqrt(gx**2 + gy**2 + gz**2)
+        acc_xy = np.sqrt(ax**2 + ay**2)
+        gyro_xy = np.sqrt(gx**2 + gy**2)
 
-        # Compute First-Order Differences (Rate of Change / Jerk)
-        df['AccMag_Change'] = df['AccMag'].diff()
-        df['GyroMag_Change'] = df['GyroMag'].diff()
+        feat_dict: Dict[str, Any] = {
+            'AccX': ax, 'AccY': ay, 'AccZ': az,
+            'GyroX': gx, 'GyroY': gy, 'GyroZ': gz,
+            'AccMag': acc_mag, 'GyroMag': gyro_mag,
+            'AccXY': acc_xy, 'GyroXY': gyro_xy,
+            'Pitch': np.arctan2(ay, np.sqrt(ax**2 + az**2)),
+            'Roll': np.arctan2(-ax, az),
+            'KineticEnergy': 0.5 * (acc_mag**2),
+            'RotationalEnergy': 0.5 * (gyro_mag**2),
+            'TotalPower': acc_mag * gyro_mag,
+            'AccX_AccY': ax * ay,
+            'AccY_AccZ': ay * az,
+            'AccMag_GyroZ': acc_mag * gz,
+        }
 
-        if self.drop_initial_na:
-            df = df.dropna(subset=['AccMag_Change', 'GyroMag_Change']).reset_index(drop=True)
-        else:
-            df['AccMag_Change'] = df['AccMag_Change'].fillna(self.fill_initial_value)
-            df['GyroMag_Change'] = df['GyroMag_Change'].fillna(self.fill_initial_value)
+        # 1st & 2nd Order Differences (Jerk and Angular Acceleration)
+        for name, arr in [('AccMag', acc_mag), ('GyroMag', gyro_mag), ('AccX', ax), ('AccY', ay), ('AccZ', az), ('GyroZ', gz)]:
+            d1 = np.insert(np.diff(arr), 0, self.fill_initial_value)
+            d2 = np.insert(np.diff(d1), 0, self.fill_initial_value)
+            feat_dict[f'{name}_diff1'] = d1
+            feat_dict[f'{name}_diff2'] = d2
+            if name == 'AccMag':
+                feat_dict['AccMag_Change'] = d1
+            elif name == 'GyroMag':
+                feat_dict['GyroMag_Change'] = d1
 
-        return df
+        # Multi-scale rolling window dynamics
+        signals = [
+            ('AccMag', acc_mag), ('GyroMag', gyro_mag),
+            ('AccX', ax), ('AccY', ay), ('AccZ', az),
+            ('GyroZ', gz), ('AccXY', acc_xy)
+        ]
+
+        for name, arr in signals:
+            s = pd.Series(arr)
+            for w in self.windows:
+                roll = s.rolling(window=w, min_periods=1)
+                r_mean = roll.mean().to_numpy()
+                r_std = roll.std().fillna(0.0).to_numpy()
+                r_max = roll.max().to_numpy()
+                r_min = roll.min().to_numpy()
+                feat_dict[f'{name}_mean_{w}'] = r_mean
+                feat_dict[f'{name}_std_{w}'] = r_std
+                feat_dict[f'{name}_range_{w}'] = r_max - r_min
+                feat_dict[f'{name}_energy_{w}'] = (s**2).rolling(window=w, min_periods=1).mean().to_numpy()
+                feat_dict[f'{name}_ewm_{w}'] = s.ewm(span=w).mean().to_numpy()
+                feat_dict[f'{name}_dev_{w}'] = arr - r_mean
+
+        out_df = pd.DataFrame(feat_dict, index=X.index)
+        for col in ['Class', 'Timestamp']:
+            if col in X.columns:
+                out_df[col] = X[col]
+        return out_df
 
     def transform_sample(self, sample: Dict[str, float]) -> Dict[str, float]:
-        """
-        Extracts kinematic features for a single streaming telemetry sample statefully.
+        """Stateful single-sample extraction with rolling temporal memory for streaming."""
+        ax = float(sample.get('AccX', 0.0))
+        ay = float(sample.get('AccY', 0.0))
+        az = float(sample.get('AccZ', 0.0))
+        gx = float(sample.get('GyroX', 0.0))
+        gy = float(sample.get('GyroY', 0.0))
+        gz = float(sample.get('GyroZ', 0.0))
 
-        Parameters
-        ----------
-        sample : dict
-            Dictionary with keys 'AccX', 'AccY', 'AccZ', 'GyroX', 'GyroY', 'GyroZ'.
-
-        Returns
-        -------
-        dict
-            Dictionary enriched with 'AccMag', 'GyroMag', 'AccMag_Change', 'GyroMag_Change'.
-        """
-        acc_x = float(sample.get('AccX', 0.0))
-        acc_y = float(sample.get('AccY', 0.0))
-        acc_z = float(sample.get('AccZ', 0.0))
-        gyro_x = float(sample.get('GyroX', 0.0))
-        gyro_y = float(sample.get('GyroY', 0.0))
-        gyro_z = float(sample.get('GyroZ', 0.0))
-
-        acc_mag = float(np.sqrt(acc_x**2 + acc_y**2 + acc_z**2))
-        gyro_mag = float(np.sqrt(gyro_x**2 + gyro_y**2 + gyro_z**2))
-
-        if self._last_acc_mag is None:
-            acc_change = self.fill_initial_value
-            gyro_change = self.fill_initial_value
-        else:
-            acc_change = acc_mag - self._last_acc_mag
-            gyro_change = gyro_mag - self._last_gyro_mag
-
+        # Direct instantaneous calculations
+        acc_mag = float(np.sqrt(ax**2 + ay**2 + az**2))
+        gyro_mag = float(np.sqrt(gx**2 + gy**2 + gz**2))
+        acc_change = (acc_mag - self._last_acc_mag) if self._last_acc_mag is not None else self.fill_initial_value
+        gyro_change = (gyro_mag - self._last_gyro_mag) if self._last_gyro_mag is not None else self.fill_initial_value
         self._last_acc_mag = acc_mag
         self._last_gyro_mag = gyro_mag
 
-        result = dict(sample)
-        result.update({
-            'AccMag': acc_mag,
-            'GyroMag': gyro_mag,
-            'AccMag_Change': acc_change,
-            'GyroMag_Change': gyro_change
+        self._history.append({
+            'AccX': ax, 'AccY': ay, 'AccZ': az,
+            'GyroX': gx, 'GyroY': gy, 'GyroZ': gz
         })
+
+        hist_df = pd.DataFrame(list(self._history))
+        feat_df = self.transform(hist_df)
+        last_row = feat_df.iloc[-1].to_dict()
+
+        result = dict(sample)
+        result.update(last_row)
+        result['AccMag'] = acc_mag
+        result['GyroMag'] = gyro_mag
+        result['AccMag_Change'] = acc_change
+        result['GyroMag_Change'] = gyro_change
         return result
 
     def reset_state(self):
-        """Resets streaming internal state."""
+        """Resets streaming rolling history."""
+        self._history.clear()
         self._last_acc_mag = None
         self._last_gyro_mag = None
 
 
 def create_features(df: pd.DataFrame, drop_initial_na: bool = False) -> pd.DataFrame:
-    """Convenience function to extract kinematic features from DataFrame."""
+    """Convenience function to extract all kinematic & temporal features."""
     extractor = KinematicFeatureExtractor(drop_initial_na=drop_initial_na)
     return extractor.transform(df)
 
