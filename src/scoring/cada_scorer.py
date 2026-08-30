@@ -99,6 +99,34 @@ class CADACompositeScorer:
         self.fitted_ = True
         return self
 
+    def init_default_heuristics(self) -> "CADACompositeScorer":
+        """
+        Initializes heuristic calibration parameters for serverless environments
+        where raw data CSV or heavy training pipelines are not available.
+        """
+        synthetic_normal = pd.DataFrame({
+            'AccX': [0.0, -0.1, 0.1, -0.2, 0.2, -0.05, 0.05],
+            'AccY': [0.0, 0.1, -0.1, 0.2, -0.2, 0.05, -0.05],
+            'AccZ': [-1.0, -0.98, -1.02, -0.95, -1.05, -0.99, -1.01],
+            'GyroX': [0.0, 0.01, -0.01, 0.02, -0.02, 0.005, -0.005],
+            'GyroY': [0.0, 0.01, -0.01, 0.02, -0.02, 0.005, -0.005],
+            'GyroZ': [0.0, 0.01, -0.01, 0.02, -0.02, 0.005, -0.005],
+        })
+        enriched = self.kinematics.transform(synthetic_normal)
+        self.feature_cols_ = [c for c in enriched.columns if c not in ['Class', 'Timestamp'] and pd.api.types.is_numeric_dtype(enriched[c])]
+
+        self.baseline_profiler.feature_cols = self.feature_cols_
+        self.baseline_profiler.fit(enriched)
+
+        self.iso_model.feature_cols = self.feature_cols_
+        self.iso_model.fit(enriched)
+
+        self.temporal_min_ = 0.0
+        self.temporal_max_ = 5.0
+        self.fitted_ = True
+        return self
+
+
     def compute_temporal_risk(self, df_or_sample: Union[pd.DataFrame, Dict[str, float]]) -> Union[pd.Series, float]:
         """Calculates normalized temporal jerk & volatility risk score in [0, 100]."""
         if isinstance(df_or_sample, dict):

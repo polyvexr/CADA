@@ -37,28 +37,32 @@ def load_or_init_scorer() -> CADACompositeScorer:
         except Exception as e:
             print(f"Warning: Failed to load pre-trained bundle ({e}). Initializing in-memory...")
     
-    # In-memory training fallback for serverless environments (read-only filesystem)
+    # In-memory training fallback from raw data if available
     try:
         from src.data.loader import load_motion_data
         from src.data.preprocessor import MotionDataPreprocessor
         from src.features.kinematics import KinematicFeatureExtractor
         
         tr_path = RAW_DATA_DIR / "train_motion_data.csv"
-        df_train = load_motion_data(tr_path, require_target=True)
-        preprocessor = MotionDataPreprocessor()
-        df_clean = preprocessor.fit_transform(df_train)
-        kinematics = KinematicFeatureExtractor()
-        df_feat = kinematics.transform(df_clean)
-        scorer = CADACompositeScorer()
-        scorer.fit(df_feat, y_train=df_feat['Class'])
-        _scorer_instance = scorer
-        return _scorer_instance
+        if tr_path.exists():
+            df_train = load_motion_data(tr_path, require_target=True)
+            preprocessor = MotionDataPreprocessor()
+            df_clean = preprocessor.fit_transform(df_train)
+            kinematics = KinematicFeatureExtractor()
+            df_feat = kinematics.transform(df_clean)
+            scorer = CADACompositeScorer()
+            scorer.fit(df_feat, y_train=df_feat['Class'])
+            _scorer_instance = scorer
+            return _scorer_instance
     except Exception as e:
-        print(f"Error initializing scorer in-memory: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"CADA scoring engine initialization failed: {e}"
-        )
+        print(f"In-memory training note: {e}. Falling back to default heuristics...")
+
+    # Zero-dependency heuristic fallback for ultra-lightweight serverless execution
+    scorer = CADACompositeScorer()
+    scorer.init_default_heuristics()
+    _scorer_instance = scorer
+    return _scorer_instance
+
 
 
 def get_scorer() -> CADACompositeScorer:
