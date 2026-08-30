@@ -13,6 +13,7 @@ from src.models.trainer import train_cada_models
 from api.routes import router, set_scorer, load_or_init_scorer
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup & shutdown lifecycle: initializes CADA scorer."""
