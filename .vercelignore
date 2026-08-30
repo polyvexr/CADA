@@ -11,12 +11,10 @@ __pycache__/
 *.pyo
 *.pyd
 notebooks/
-data/
 dashboard/
 tests/
 results/
 *.ipynb
-*.csv
 *.md
 .streamlit/
 

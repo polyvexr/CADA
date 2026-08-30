@@ -7,9 +7,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.config import MODELS_DIR
-from src.scoring.cada_scorer import CADACompositeScorer
-from src.models.trainer import train_cada_models
 from api.routes import router, set_scorer, load_or_init_scorer
 
 
