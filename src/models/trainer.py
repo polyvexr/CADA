@@ -6,8 +6,9 @@ from pathlib import Path
 import json
 import pandas as pd
 from typing import Optional
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, precision_score, recall_score
 
-from src.config import RAW_DATA_DIR, MODELS_DIR, RESULTS_DIR, FEATURE_COLS
+from src.config import RAW_DATA_DIR, MODELS_DIR, RESULTS_DIR
 from src.data.loader import load_motion_data
 from src.data.preprocessor import MotionDataPreprocessor
 from src.features.kinematics import KinematicFeatureExtractor
@@ -21,7 +22,7 @@ def train_cada_models(
     results_dir: Optional[Path] = None
 ) -> CADACompositeScorer:
     """
-    Trains baseline profiler, isolation forest, and composite CADA scorer on train_motion_data.csv,
+    Trains baseline profiler, isolation forest, supervised model, and composite CADA scorer on train_motion_data.csv,
     evaluates on test_motion_data.csv, and serializes artifacts.
     """
     train_path = train_csv_path or (RAW_DATA_DIR / "train_motion_data.csv")
@@ -45,11 +46,11 @@ def train_cada_models(
 
     # Kinematics Feature Extraction
     kinematics = KinematicFeatureExtractor()
-    df_train_feat = kinematics.fit_transform(df_train_clean)
+    df_train_feat = kinematics.transform(df_train_clean)
     df_test_feat = kinematics.transform(df_test_clean)
 
     # Initialize and Train CADA Composite Scorer
-    print("Training CADA Composite Scorer on NORMAL driving baseline...")
+    print("Training CADA Composite Scorer...")
     scorer = CADACompositeScorer()
     scorer.fit(df_train_feat, y_train=df_train_feat['Class'])
 
@@ -57,13 +58,28 @@ def train_cada_models(
     print("Evaluating CADA Risk Scores on test dataset...")
     df_test_scored = scorer.score_batch(df_test_feat)
 
-    # Compute risk tier statistics
+    # Metrics
+    y_test_bin = (df_test_feat['Class'] == 'AGGRESSIVE').astype(int)
+    cada_scores = df_test_scored['CADA_Score']
+    cada_preds = (cada_scores >= 50.0).astype(int)
+
+    test_accuracy = float(accuracy_score(y_test_bin, cada_preds))
+    test_f1 = float(f1_score(y_test_bin, cada_preds))
+    test_roc = float(roc_auc_score(y_test_bin, cada_scores))
+    test_precision = float(precision_score(y_test_bin, cada_preds, zero_division=0))
+    test_recall = float(recall_score(y_test_bin, cada_preds, zero_division=0))
+
     tier_distribution = df_test_scored['Risk_Tier'].value_counts().to_dict()
     mean_scores_by_class = df_test_scored.groupby('Class')['CADA_Score'].mean().to_dict()
 
     summary_metrics = {
         "train_samples": len(df_train_feat),
         "test_samples": len(df_test_feat),
+        "test_accuracy": round(test_accuracy, 4),
+        "test_f1_score": round(test_f1, 4),
+        "test_roc_auc": round(test_roc, 4),
+        "test_precision": round(test_precision, 4),
+        "test_recall": round(test_recall, 4),
         "test_tier_distribution": tier_distribution,
         "mean_cada_score_by_class": mean_scores_by_class
     }
@@ -76,7 +92,6 @@ def train_cada_models(
     scorer.save(bundle_path)
     print(f"\nSaved CADA model bundle to: {bundle_path}")
 
-    # Persist baseline profiler & isolation forest separately for modular access
     scorer.baseline_profiler.save(out_models_dir / "baseline_profiler.joblib")
     scorer.iso_model.save(out_models_dir / "isolation_forest.joblib")
 

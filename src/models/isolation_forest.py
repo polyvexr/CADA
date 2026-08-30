@@ -9,13 +9,13 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 import joblib
 
-from src.config import FEATURE_COLS, IsolationForestConfig
+from src.config import IsolationForestConfig, DEFAULT_IFOREST_CONFIG
 
 
 class IsolationForestModel:
     """
-    Wraps scikit-learn IsolationForest to fit on NORMAL driving baselines
-    and produce calibrated, normalized continuous risk scores in [0, 100].
+    Wraps IsolationForest on NORMAL driving baselines
+    to produce calibrated, normalized continuous risk scores in [0, 100].
     """
 
     def __init__(
@@ -23,32 +23,24 @@ class IsolationForestModel:
         config: Optional[IsolationForestConfig] = None,
         feature_cols: Optional[List[str]] = None
     ):
-        self.config = config or IsolationForestConfig()
-        self.feature_cols = feature_cols or FEATURE_COLS
-
+        self.config = config or DEFAULT_IFOREST_CONFIG
+        self.feature_cols = feature_cols
         self.model = IsolationForest(
             n_estimators=self.config.n_estimators,
             contamination=self.config.contamination,
             random_state=self.config.random_state,
             n_jobs=self.config.n_jobs
         )
-
         self.score_min_: float = -0.5
         self.score_max_: float = 0.5
         self.fitted_: bool = False
 
     def fit(self, X: pd.DataFrame) -> "IsolationForestModel":
-        """
-        Fits Isolation Forest on baseline NORMAL driving features and computes calibration bounds.
-        """
-        missing = [col for col in self.feature_cols if col not in X.columns]
-        if missing:
-            raise ValueError(f"Missing required feature columns: {missing}")
+        if self.feature_cols is None:
+            self.feature_cols = [c for c in X.columns if c not in ['Class', 'Timestamp'] and pd.api.types.is_numeric_dtype(X[c])]
 
         data = X[self.feature_cols]
         self.model.fit(data)
-
-        # Calibrate decision function scaling bounds
         scores = self.model.decision_function(data)
         self.score_min_ = float(scores.min())
         self.score_max_ = float(scores.max())
@@ -56,35 +48,27 @@ class IsolationForestModel:
         return self
 
     def score(self, X: Union[pd.DataFrame, Dict[str, float]]) -> Union[pd.Series, float]:
-        """
-        Calculates normalized Isolation Forest Risk Score (0 - 100).
-        Higher score indicates higher anomaly / out-of-distribution risk.
-        """
         if not self.fitted_:
             raise RuntimeError("IsolationForestModel must be fitted before scoring.")
 
         if isinstance(X, dict):
-            features_df = pd.DataFrame([[X.get(col, 0.0) for col in self.feature_cols]], columns=self.feature_cols)
+            features_df = pd.DataFrame([[float(X.get(col, 0.0)) for col in self.feature_cols]], columns=self.feature_cols)
             raw_score = float(self.model.decision_function(features_df)[0])
             norm = (raw_score - self.score_min_) / (self.score_max_ - self.score_min_ + 1e-8)
-            iso_risk = float(np.clip((1.0 - norm) * 100.0, 0.0, 100.0))
-            return iso_risk
+            return float(np.clip((1.0 - norm) * 100.0, 0.0, 100.0))
 
         data = X[self.feature_cols]
         raw_scores = self.model.decision_function(data)
         norm_scores = (raw_scores - self.score_min_) / (self.score_max_ - self.score_min_ + 1e-8)
-        iso_risk = np.clip((1.0 - norm_scores) * 100.0, 0.0, 100.0)
-        return pd.Series(iso_risk, index=data.index)
+        return pd.Series(np.clip((1.0 - norm_scores) * 100.0, 0.0, 100.0), index=data.index)
 
     def save(self, filepath: Union[str, Path]):
-        """Persists fitted model to disk."""
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(self, path)
 
     @classmethod
     def load(cls, filepath: Union[str, Path]) -> "IsolationForestModel":
-        """Loads fitted model from disk."""
         path = Path(filepath)
         if not path.exists():
             raise FileNotFoundError(f"Isolation Forest model file not found at: {path}")
