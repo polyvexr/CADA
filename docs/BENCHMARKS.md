@@ -31,12 +31,13 @@ This document details the comparative evaluation of the **CADA Hybrid Composite 
 
 ## 3. Quantitative Results
 
-| Model / Architecture              | Precision  |   Recall   |  F1 Score  |  Accuracy  |  ROC-AUC   |   PR-AUC   | Spearman Corr ($r_s$) | Latency (ms/sample) |
-| :-------------------------------- | :--------: | :--------: | :--------: | :--------: | :--------: | :--------: | :-------------------: | :-----------------: |
-| **Supervised Random Forest**      |   0.4409   | **0.4767** | **0.4581** |   0.7023   | **0.6812** | **0.4802** |      **0.3022**       |      0.0104 ms      |
-| **Unsupervised Isolation Forest** |   0.4840   |   0.2039   |   0.2869   |   0.7325   |   0.6564   |   0.4075   |        0.2645         |      0.0043 ms      |
-| **Unsupervised One-Class SVM**    | **0.5095** |   0.1978   |   0.2850   | **0.7380** |   0.5871   |   0.3884   |        0.1205         |    **0.0020 ms**    |
-| **CADA Composite Architecture**   |   0.4601   |   0.1204   |   0.1908   |   0.7305   |   0.6557   |   0.3895   |        0.2581         |      0.0056 ms      |
+| Model / Architecture                | Precision  |   Recall   |  F1 Score  |  Accuracy  |  ROC-AUC   |   PR-AUC   | Spearman Corr ($r_s$) | Latency (ms/sample) |
+| :---------------------------------- | :--------: | :--------: | :--------: | :--------: | :--------: | :--------: | :-------------------: | :-----------------: |
+| **Supervised HistGradientBoosting** |   0.7904   | **0.7273** | **0.7575** | **0.8771** |   0.8867   | **0.8359** |        0.6389         |    **0.0029 ms**    |
+| **Supervised Random Forest**        |   0.7313   |   0.7088   |   0.7199   |   0.8544   | **0.9120** |   0.8204   |      **0.6833**       |      0.0148 ms      |
+| **Unsupervised Isolation Forest**   |   0.5543   |   0.3759   |   0.4480   |   0.7555   |   0.7598   |   0.5461   |        0.4150         |      0.0063 ms      |
+| **Unsupervised One-Class SVM**      |   0.4000   |   0.4939   |   0.4420   |   0.6709   |   0.6579   |   0.5000   |        0.1997         |      0.0135 ms      |
+| **CADA Composite Architecture**     | **0.7952** |   0.6867   |   0.7370   | **0.8706** |   0.8965   |   0.7912   |        0.6020         |      0.0173 ms      |
 
 _Note: For CADA binary thresholding, scores $\ge 50$ (HIGH & CRITICAL risk tiers) are treated as detected anomalies._
 
@@ -44,13 +45,15 @@ _Note: For CADA binary thresholding, scores $\ge 50$ (HIGH & CRITICAL risk tiers
 
 ## 4. Key Takeaways & Architectural Analysis
 
-1. **Continuous Risk vs Discrete Labels**:
-   - While discrete Supervised Random Forest achieves higher binary recall on specific pre-labeled maneuvers, it cannot express intermediate danger levels or novel unobserved hazards.
-   - CADA provides a **continuous spectrum** where `SLOW` driving scores an average of **19.40**, `NORMAL` scores **23.18**, and `AGGRESSIVE` scores **29.07**, with extreme spikes reaching **90.65**.
+1. **Accuracy Range (80%–90%)**:
+   - Upgraded feature representation with multi-scale rolling temporal dynamics ($w \in \{3, 7, 15, 25, 40\}$), orientation kinematics (Pitch, Roll, Yaw rate), and 2nd-order jerk derivatives boosted classification accuracy from **~70–73%** to **87.1% – 87.7%**.
+   - CADA composite continuous scoring achieves **87.06% accuracy** with an ROC-AUC of **0.8965** and F1 score of **0.7370**.
 
-2. **Multi-Component Explainability**:
-   - Standard models provide an uninterpretable score or probability.
-   - CADA separates the risk into **$Iso\_Risk$** (orientation novelty), **$Stat\_Risk$** (excessive sustained force), and **$Temporal\_Risk$** (sudden jerk/shock), allowing vehicle safety systems to know _why_ an alert fired.
+2. **Continuous Risk Spectrum**:
+   - CADA provides a **continuous spectrum** where `SLOW` driving scores an average of **11.46**, `NORMAL` scores **21.21**, and `AGGRESSIVE` scores **56.77**, with extreme spikes reaching **95.0+**.
 
-3. **Ultra-Low Latency**:
-   - CADA scores incoming telemetry in under **0.006 ms (6 microseconds) per sample**, allowing it to process sensor streams exceeding **150,000 Hz** on standard CPU hardware.
+3. **Multi-Component Explainability**:
+   - CADA transparently isolates risk into **$Iso\_Risk$** (unsupervised orientation novelty), **$Stat\_Risk$** (statistical baseline deviations), **$Temporal\_Risk$** (jerk/volatility shock), and learned maneuver risk.
+
+4. **Ultra-Low Latency**:
+   - CADA scores incoming telemetry in under **0.02 ms per sample**, allowing high-frequency streaming over **50,000 Hz** on standard CPU hardware.

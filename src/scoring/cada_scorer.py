@@ -1,14 +1,17 @@
 """
 Master CADA Composite Continuous Risk Scoring Engine.
+Fuses Supervised Maneuver Probability, Isolation Forest Novelty,
+Statistical Z-Score Deviation, and Multi-Scale Kinematic Jerk Dynamics.
 """
 
 from typing import Dict, Any, Union, Optional
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingClassifier
 import joblib
 
-from src.config import DEFAULT_SCORER_CONFIG, CADAScorerConfig, FEATURE_COLS
+from src.config import DEFAULT_SCORER_CONFIG, CADAScorerConfig
 from src.features.kinematics import KinematicFeatureExtractor
 from src.models.baseline_profiler import NormalBaselineProfiler
 from src.models.isolation_forest import IsolationForestModel
@@ -18,22 +21,28 @@ from src.scoring.risk_tiers import assign_risk_tier, assign_risk_tiers_batch, Ri
 class CADACompositeScorer:
     """
     Master CADA continuous driving anomaly risk scoring system.
-    Combines:
-    1. Isolation Forest Anomaly Risk (geometric / distributional novelty)
-    2. Statistical Z-Score Deviation Risk (calibrated against 95th percentile normal baseline)
-    3. Temporal Rate-of-Change Jerk Risk (acceleration and angular velocity changes)
+    Synthesizes:
+    1. Supervised Gradient Maneuver Risk (learned aggressive motion probability)
+    2. Isolation Forest Novelty Risk (geometric / distributional novelty vs normal driving)
+    3. Statistical Z-Score Deviation Risk (calibrated against 95th percentile baseline)
+    4. Multi-Scale Kinematic Jerk Risk (acceleration, angular velocity, and volatility dynamics)
     """
 
     def __init__(
         self,
         baseline_profiler: Optional[NormalBaselineProfiler] = None,
         iso_model: Optional[IsolationForestModel] = None,
+        supervised_model: Optional[HistGradientBoostingClassifier] = None,
         config: Optional[CADAScorerConfig] = None
     ):
         self.baseline_profiler = baseline_profiler or NormalBaselineProfiler()
         self.iso_model = iso_model or IsolationForestModel()
+        self.supervised_model = supervised_model
         self.config = config or DEFAULT_SCORER_CONFIG
-        self.kinematics = KinematicFeatureExtractor()
+        self.kinematics = KinematicFeatureExtractor(windows=self.config.temporal_windows)
+
+        # Feature column tracking
+        self.feature_cols_: Optional[list] = None
 
         # Calibration parameters for temporal variation
         self.temporal_min_: float = 0.0
@@ -44,31 +53,46 @@ class CADACompositeScorer:
         self._last_ema_score: Optional[float] = None
 
     def fit(self, X_train: pd.DataFrame, y_train: Optional[pd.Series] = None) -> "CADACompositeScorer":
-        """
-        Fits the entire CADA scoring engine using training data.
-        Baseline parameters and Isolation Forest are calibrated strictly on NORMAL driving data.
-        """
-        # Ensure kinematic features are computed
-        if 'AccMag' not in X_train.columns or 'AccMag_Change' not in X_train.columns:
-            df_feat = self.kinematics.fit_transform(X_train)
+        """Fits baseline profiler, isolation forest, supervised model, and temporal limits."""
+        if 'Pitch' not in X_train.columns or 'KineticEnergy' not in X_train.columns:
+            df_feat = self.kinematics.transform(X_train)
         else:
             df_feat = X_train.copy()
 
-        # Filter normal driving baseline
+        self.feature_cols_ = [c for c in df_feat.columns if c not in ['Class', 'Timestamp'] and pd.api.types.is_numeric_dtype(df_feat[c])]
+
+        # Supervised model training if ground truth provided
         if y_train is not None:
             normal_mask = (y_train == 'NORMAL')
             normal_feat = df_feat[normal_mask].reset_index(drop=True)
+            y_binary = (y_train == 'AGGRESSIVE').astype(int)
+            self.supervised_model = HistGradientBoostingClassifier(
+                max_iter=250,
+                learning_rate=0.04,
+                max_depth=9,
+                min_samples_leaf=12,
+                l2_regularization=0.1,
+                random_state=42
+            )
+            self.supervised_model.fit(df_feat[self.feature_cols_], y_binary)
         else:
             normal_feat = df_feat
 
-        # Fit Sub-models on NORMAL driving
+        # Fit Sub-models on NORMAL driving baseline
+        self.baseline_profiler.feature_cols = self.feature_cols_
         self.baseline_profiler.fit(normal_feat)
+        
+        self.iso_model.feature_cols = self.feature_cols_
         self.iso_model.fit(normal_feat)
 
         # Calibrate temporal variation normalization bounds
-        temporal_dev = np.abs(df_feat['AccMag_Change']) + np.abs(df_feat['GyroMag_Change'])
+        acc_chg = np.abs(df_feat['AccMag_Change']) if 'AccMag_Change' in df_feat else np.zeros(len(df_feat))
+        gyro_chg = np.abs(df_feat['GyroMag_Change']) if 'GyroMag_Change' in df_feat else np.zeros(len(df_feat))
+        acc_range = df_feat.get('AccMag_range_7', pd.Series(0.0, index=df_feat.index))
+        temporal_dev = acc_chg + gyro_chg + acc_range
+
         self.temporal_min_ = float(temporal_dev.min())
-        self.temporal_max_ = float(np.percentile(temporal_dev, 99.0) if len(temporal_dev) > 0 else 5.0)
+        self.temporal_max_ = float(np.percentile(temporal_dev, 95.0) if len(temporal_dev) > 0 else 5.0)
         if self.temporal_max_ <= self.temporal_min_:
             self.temporal_max_ = self.temporal_min_ + 1.0
 
@@ -76,50 +100,49 @@ class CADACompositeScorer:
         return self
 
     def compute_temporal_risk(self, df_or_sample: Union[pd.DataFrame, Dict[str, float]]) -> Union[pd.Series, float]:
-        """Calculates normalized temporal jerk risk score in [0, 100]."""
+        """Calculates normalized temporal jerk & volatility risk score in [0, 100]."""
         if isinstance(df_or_sample, dict):
             acc_chg = abs(float(df_or_sample.get('AccMag_Change', 0.0)))
             gyro_chg = abs(float(df_or_sample.get('GyroMag_Change', 0.0)))
-            dev = acc_chg + gyro_chg
+            acc_range = abs(float(df_or_sample.get('AccMag_range_7', 0.0)))
+            dev = acc_chg + gyro_chg + acc_range
             norm = (dev - self.temporal_min_) / (self.temporal_max_ - self.temporal_min_ + 1e-8)
-            return float(np.clip(norm * 100.0, 0.0, 100.0))
+            return float(np.clip(norm * 50.0, 0.0, 100.0))
 
         df = df_or_sample
-        dev = np.abs(df['AccMag_Change']) + np.abs(df['GyroMag_Change'])
+        acc_chg = np.abs(df['AccMag_Change']) if 'AccMag_Change' in df else np.zeros(len(df))
+        gyro_chg = np.abs(df['GyroMag_Change']) if 'GyroMag_Change' in df else np.zeros(len(df))
+        acc_range = df.get('AccMag_range_7', pd.Series(0.0, index=df.index))
+        dev = acc_chg + gyro_chg + acc_range
         norm = (dev - self.temporal_min_) / (self.temporal_max_ - self.temporal_min_ + 1e-8)
-        return np.clip(norm * 100.0, 0.0, 100.0)
+        return np.clip(norm * 50.0, 0.0, 100.0)
 
     def score_sample(self, sample: Dict[str, float]) -> Dict[str, Any]:
-        """
-        Scores a single streaming telemetry observation statefully.
-
-        Parameters
-        ----------
-        sample : dict
-            Raw sensor readings dict containing AccX, AccY, AccZ, GyroX, GyroY, GyroZ.
-
-        Returns
-        -------
-        dict
-            Enriched result with CADA_Score, Risk_Tier, and risk components.
-        """
+        """Scores a single streaming telemetry observation statefully."""
         if not self.fitted_:
             raise RuntimeError("CADACompositeScorer must be fitted before scoring.")
 
-        # Compute kinematic features statefully
         enriched_sample = self.kinematics.transform_sample(sample)
 
-        # Compute sub-scores
-        iso_r = self.iso_model.score(enriched_sample)
-        stat_r = self.baseline_profiler.score(enriched_sample)
-        temp_r = self.compute_temporal_risk(enriched_sample)
+        iso_r = float(self.iso_model.score(enriched_sample))
+        stat_r = float(self.baseline_profiler.score(enriched_sample))
+        temp_r = float(self.compute_temporal_risk(enriched_sample))
 
-        # Composite weighted score
-        w1, w2, w3 = self.config.weight_iso, self.config.weight_stat, self.config.weight_temporal
-        total_w = w1 + w2 + w3
-        raw_cada_score = (w1 * iso_r + w2 * stat_r + w3 * temp_r) / total_w
+        if self.supervised_model is not None:
+            feat_vec = pd.DataFrame([[float(enriched_sample.get(c, 0.0)) for c in self.feature_cols_]], columns=self.feature_cols_)
+            sup_prob = float(self.supervised_model.predict_proba(feat_vec)[0, 1])
+            sup_r = sup_prob * 100.0
+            w_sup, w_iso, w_stat, w_temp = (
+                self.config.weight_supervised,
+                self.config.weight_iso,
+                self.config.weight_stat,
+                self.config.weight_temporal
+            )
+            raw_cada_score = (w_sup * sup_r + w_iso * iso_r + w_stat * stat_r + w_temp * temp_r) / (w_sup + w_iso + w_stat + w_temp)
+        else:
+            w_iso, w_stat, w_temp = self.config.weight_iso, self.config.weight_stat, self.config.weight_temporal
+            raw_cada_score = (w_iso * iso_r + w_stat * stat_r + w_temp * temp_r) / (w_iso + w_stat + w_temp)
 
-        # Optional EMA smoothing for streaming
         if self.config.enable_ema:
             if self._last_ema_score is None:
                 final_score = raw_cada_score
@@ -138,30 +161,18 @@ class CADACompositeScorer:
             "Iso_Risk": round(float(iso_r), 2),
             "Stat_Risk": round(float(stat_r), 2),
             "Temporal_Risk": round(float(temp_r), 2),
-            "AccMag": round(float(enriched_sample['AccMag']), 4),
-            "GyroMag": round(float(enriched_sample['GyroMag']), 4),
-            "AccMag_Change": round(float(enriched_sample['AccMag_Change']), 4),
-            "GyroMag_Change": round(float(enriched_sample['GyroMag_Change']), 4)
+            "AccMag": round(float(enriched_sample.get('AccMag', 0.0)), 4),
+            "GyroMag": round(float(enriched_sample.get('GyroMag', 0.0)), 4),
+            "AccMag_Change": round(float(enriched_sample.get('AccMag_Change', 0.0)), 4),
+            "GyroMag_Change": round(float(enriched_sample.get('GyroMag_Change', 0.0)), 4)
         }
 
     def score_batch(self, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Scores a batch DataFrame of telemetry data.
-
-        Parameters
-        ----------
-        X : pd.DataFrame
-            DataFrame containing raw sensors and/or kinematic features.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame enriched with Iso_Risk, Stat_Risk, Temporal_Risk, CADA_Score, and Risk_Tier.
-        """
+        """Scores a batch DataFrame of telemetry data."""
         if not self.fitted_:
             raise RuntimeError("CADACompositeScorer must be fitted before scoring.")
 
-        if 'AccMag' not in X.columns or 'AccMag_Change' not in X.columns:
+        if 'Pitch' not in X.columns or 'KineticEnergy' not in X.columns:
             df = self.kinematics.transform(X)
         else:
             df = X.copy()
@@ -170,9 +181,20 @@ class CADACompositeScorer:
         stat_r = self.baseline_profiler.score(df)
         temp_r = self.compute_temporal_risk(df)
 
-        w1, w2, w3 = self.config.weight_iso, self.config.weight_stat, self.config.weight_temporal
-        total_w = w1 + w2 + w3
-        cada_score = (w1 * iso_r + w2 * stat_r + w3 * temp_r) / total_w
+        if self.supervised_model is not None:
+            feat_df = df[self.feature_cols_]
+            sup_probs = self.supervised_model.predict_proba(feat_df)[:, 1]
+            sup_r = sup_probs * 100.0
+            w_sup, w_iso, w_stat, w_temp = (
+                self.config.weight_supervised,
+                self.config.weight_iso,
+                self.config.weight_stat,
+                self.config.weight_temporal
+            )
+            cada_score = (w_sup * sup_r + w_iso * iso_r + w_stat * stat_r + w_temp * temp_r) / (w_sup + w_iso + w_stat + w_temp)
+        else:
+            w_iso, w_stat, w_temp = self.config.weight_iso, self.config.weight_stat, self.config.weight_temporal
+            cada_score = (w_iso * iso_r + w_stat * stat_r + w_temp * temp_r) / (w_iso + w_stat + w_temp)
 
         df['Iso_Risk'] = iso_r
         df['Stat_Risk'] = stat_r

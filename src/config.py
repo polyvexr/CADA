@@ -34,13 +34,17 @@ TARGET_COL: str = "Class"
 @dataclass
 class CADAScorerConfig:
     """Configuration for CADA Risk Scoring Engine."""
-    # Component weights in composite score (must sum to 1.0 ideally)
-    weight_iso: float = 1.0 / 3.0
-    weight_stat: float = 1.0 / 3.0
-    weight_temporal: float = 1.0 / 3.0
+    # Component weights in composite score
+    weight_supervised: float = 0.55
+    weight_iso: float = 0.15
+    weight_stat: float = 0.15
+    weight_temporal: float = 0.15
     
-    # Statistical baseline percentile cutoff (e.g. 95th percentile of normal driving z-scores)
+    # Statistical baseline percentile cutoff (95th percentile of normal driving variation)
     normal_percentile_cutoff: float = 95.0
+    
+    # Temporal multi-scale window definitions
+    temporal_windows: tuple = (3, 7, 15, 25, 40)
     
     # Risk Tier Thresholds
     tier_moderate_threshold: float = 25.0
@@ -55,8 +59,8 @@ class CADAScorerConfig:
 @dataclass
 class IsolationForestConfig:
     """Configuration for Isolation Forest Model."""
-    n_estimators: int = 100
-    contamination: str = "auto"
+    n_estimators: int = 150
+    contamination: float = 0.10
     random_state: int = 42
     n_jobs: int = -1
 
