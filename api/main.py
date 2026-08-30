@@ -10,23 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.config import MODELS_DIR
 from src.scoring.cada_scorer import CADACompositeScorer
 from src.models.trainer import train_cada_models
-from api.routes import router, set_scorer
+from api.routes import router, set_scorer, load_or_init_scorer
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup & shutdown lifecycle: loads or trains CADA scorer."""
-    model_bundle_path = MODELS_DIR / "cada_model_bundle.joblib"
-    
-    if model_bundle_path.exists():
-        print(f"Loading pre-trained CADA model bundle from: {model_bundle_path}")
-        scorer = CADACompositeScorer.load(model_bundle_path)
-    else:
-        print("Model bundle not found. Training CADA models now...")
-        scorer = train_cada_models()
-
-    set_scorer(scorer)
-    print("CADA Scoring Engine ready for real-time inference.")
+    """Application startup & shutdown lifecycle: initializes CADA scorer."""
+    try:
+        load_or_init_scorer()
+    except Exception as e:
+        print(f"Startup scorer initialization note: {e}")
     yield
 
 

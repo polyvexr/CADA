@@ -20,17 +20,52 @@ from src.scoring.risk_tiers import RiskTier
 
 router = APIRouter()
 
-# Global reference to scorer (injected in main.py)
+# Global reference to scorer
 _scorer_instance: Optional[CADACompositeScorer] = None
 
 
-def get_scorer() -> CADACompositeScorer:
-    """Dependency provider for CADA scorer."""
-    if _scorer_instance is None or not _scorer_instance.fitted_:
+def load_or_init_scorer() -> CADACompositeScorer:
+    """Safely loads bundle from disk or falls back to in-memory model training."""
+    global _scorer_instance
+    from src.config import MODELS_DIR, RAW_DATA_DIR
+    
+    model_bundle_path = MODELS_DIR / "cada_model_bundle.joblib"
+    if model_bundle_path.exists():
+        try:
+            _scorer_instance = CADACompositeScorer.load(model_bundle_path)
+            return _scorer_instance
+        except Exception as e:
+            print(f"Warning: Failed to load pre-trained bundle ({e}). Initializing in-memory...")
+    
+    # In-memory training fallback for serverless environments (read-only filesystem)
+    try:
+        from src.data.loader import load_motion_data
+        from src.data.preprocessor import MotionDataPreprocessor
+        from src.features.kinematics import KinematicFeatureExtractor
+        
+        tr_path = RAW_DATA_DIR / "train_motion_data.csv"
+        df_train = load_motion_data(tr_path, require_target=True)
+        preprocessor = MotionDataPreprocessor()
+        df_clean = preprocessor.fit_transform(df_train)
+        kinematics = KinematicFeatureExtractor()
+        df_feat = kinematics.transform(df_clean)
+        scorer = CADACompositeScorer()
+        scorer.fit(df_feat, y_train=df_feat['Class'])
+        _scorer_instance = scorer
+        return _scorer_instance
+    except Exception as e:
+        print(f"Error initializing scorer in-memory: {e}")
         raise HTTPException(
-            status_code=503,
-            detail="CADA scoring engine is not loaded or fitted. Please train or load model artifacts."
+            status_code=500,
+            detail=f"CADA scoring engine initialization failed: {e}"
         )
+
+
+def get_scorer() -> CADACompositeScorer:
+    """Dependency provider for CADA scorer with automatic lazy-loading."""
+    global _scorer_instance
+    if _scorer_instance is None or not _scorer_instance.fitted_:
+        _scorer_instance = load_or_init_scorer()
     return _scorer_instance
 
 
@@ -40,10 +75,28 @@ def set_scorer(scorer: CADACompositeScorer):
     _scorer_instance = scorer
 
 
+@router.get("/", tags=["General"])
+def root():
+    """Root endpoint providing service metadata and documentation links."""
+    return {
+        "title": "CADA - Continuous Driving Anomaly Detection API",
+        "status": "operational",
+        "docs_url": "/docs",
+        "openapi_url": "/openapi.json",
+        "health_url": "/health",
+        "version": "1.0.0"
+    }
+
+
 @router.get("/health", response_model=HealthResponse, tags=["Health"])
 def health_check():
     """Returns service operational health and model readiness status."""
-    is_ready = _scorer_instance is not None and _scorer_instance.fitted_
+    try:
+        scorer = get_scorer()
+        is_ready = scorer is not None and scorer.fitted_
+    except Exception:
+        is_ready = False
+
     return HealthResponse(
         status="healthy" if is_ready else "degraded",
         model_loaded=is_ready,
