@@ -23,8 +23,7 @@ from src.scoring.cada_scorer import CADACompositeScorer
 from src.models.trainer import train_cada_models
 
 st.set_page_config(
-    page_title="CADA - Continuous Anomaly Detection Architecture",
-    page_icon="🚗",
+    page_title="CADA : Continuous Anomaly Detection Architecture",
     layout="wide"
 )
 
@@ -55,14 +54,14 @@ def get_scorer():
 
 scorer = get_scorer()
 
-st.title("🚗 CADA — Continuous Anomaly Detection Architecture")
+st.title("CADA : Continuous Anomaly Detection Algorithm")
 st.caption("Real-Time Multi-Axis IMU Driving Risk Assessment & Safety Monitoring")
 
 # Sidebar Configuration
-st.sidebar.header("📁 Telemetry Source")
+st.sidebar.header("Telemetry Source")
 data_source = st.sidebar.radio(
     "Select Telemetry Feed:",
-    ["Default Test Dataset (test_motion_data.csv)", "Upload Custom CSV"]
+    ["Default Test Dataset", "Upload Custom CSV"]
 )
 
 if data_source == "Upload Custom CSV":
@@ -107,10 +106,10 @@ st.divider()
 
 # Main Visualizations Tabs
 tab_timeline, tab_gauge, tab_breakdown, tab_raw = st.tabs([
-    "📈 Risk Timeline & Sensor Traces",
-    "🎯 Live Sample Inspector & Gauge",
-    "🔬 Risk Component Decomposition",
-    "📋 Data Explorer"
+    "Risk Timeline & Sensor Traces",
+    "Live Sample Inspector & Gauge",
+    "Risk Component Decomposition",
+    "Data Explorer"
 ])
 
 with tab_timeline:
@@ -236,7 +235,7 @@ with tab_raw:
     st.dataframe(df_scored, use_container_width=True)
     csv_bytes = df_scored.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Download Scored CSV",
+        label="Download Scored CSV",
         data=csv_bytes,
         file_name="cada_scored_telemetry.csv",
         mime="text/csv"
