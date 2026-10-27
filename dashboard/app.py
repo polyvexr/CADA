@@ -105,11 +105,12 @@ with col5:
 st.divider()
 
 # Main Visualizations Tabs
-tab_timeline, tab_gauge, tab_breakdown, tab_raw = st.tabs([
+tab_timeline, tab_gauge, tab_breakdown, tab_raw, tab_manual = st.tabs([
     "Risk Timeline & Sensor Traces",
     "Live Sample Inspector & Gauge",
     "Risk Component Decomposition",
-    "Data Explorer"
+    "Data Explorer",
+    "Unit Data Evaluation"
 ])
 
 with tab_timeline:
@@ -171,13 +172,16 @@ with tab_gauge:
 
     with col_g1:
         # Speedometer Gauge
+        tier_label = sample['Risk_Tier']
+        st.markdown(f"#### CADA Risk Score: **{sample['CADA_Score']:.1f}**")
+        st.caption(f"Operational Tier: **{tier_label}**")
         fig_gauge = go.Figure(go.Indicator(
             mode="gauge+number",
             value=sample['CADA_Score'],
+            number={'font': {'size': 44}},
             domain={'x': [0, 1], 'y': [0, 1]},
-            title={'text': f"CADA Score (Tier: {sample['Risk_Tier']})", 'font': {'size': 20}},
             gauge={
-                'axis': {'range': [0, 100], 'tickwidth': 1},
+                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#666"},
                 'bar': {'color': "#111827"},
                 'steps': [
                     {'range': [0, 25], 'color': '#86efac'},
@@ -187,7 +191,7 @@ with tab_gauge:
                 ]
             }
         ))
-        fig_gauge.update_layout(height=280, margin=dict(l=20, r=20, t=30, b=20))
+        fig_gauge.update_layout(height=260, margin=dict(l=20, r=20, t=10, b=10))
         st.plotly_chart(fig_gauge, use_container_width=True)
 
     with col_g2:
@@ -240,4 +244,128 @@ with tab_raw:
         file_name="cada_scored_telemetry.csv",
         mime="text/csv"
     )
+
+with tab_manual:
+    st.subheader("Manual Unit Telemetry Evaluation")
+    st.caption("Input custom 6-DOF IMU sensor readings to evaluate instantaneous CADA risk score, sub-components, and safety tier.")
+
+    # Preset scenarios for quick testing
+    preset_choice = st.selectbox(
+        "Load Preset Example (Optional):",
+        [
+            "Custom Manual Input",
+            "Normal Driving (NORMAL)",
+            "Moderate Turn / Acceleration (MODERATE)",
+            "Sharp Maneuver / Swerve (HIGH)",
+            "Emergency Braking / Shock (CRITICAL)"
+        ]
+    )
+
+    defaults = {
+        "AccX": 0.0, "AccY": 0.0, "AccZ": 0.0,
+        "GyroX": 0.0, "GyroY": 0.0, "GyroZ": 0.0
+    }
+    if preset_choice == "Normal Driving (NORMAL)":
+        defaults = {"AccX": 0.7582, "AccY": -0.2178, "AccZ": 0.4573, "GyroX": 0.0000, "GyroY": 0.0000, "GyroZ": 0.0000}
+    elif preset_choice == "Moderate Turn / Acceleration (MODERATE)":
+        defaults = {"AccX": 0.5709, "AccY": 0.9929, "AccZ": 0.0296, "GyroX": 0.0269, "GyroY": -0.0297, "GyroZ": 0.0359}
+    elif preset_choice == "Sharp Maneuver / Swerve (HIGH)":
+        defaults = {"AccX": 0.4422, "AccY": -1.6468, "AccZ": 0.0653, "GyroX": -0.0104, "GyroY": -0.0242, "GyroZ": 0.0011}
+    elif preset_choice == "Emergency Braking / Shock (CRITICAL)":
+        defaults = {"AccX": 2.7244, "AccY": -7.5841, "AccZ": 2.3909, "GyroX": 0.0238, "GyroY": 0.0137, "GyroZ": -0.0380}
+
+    with st.form("manual_evaluation_form"):
+        st.markdown("##### 1. Accelerometer Readings (g)")
+        c_acc1, c_acc2, c_acc3 = st.columns(3)
+        with c_acc1:
+            in_acc_x = st.number_input("AccX (Lateral)", value=float(defaults["AccX"]), step=0.05, format="%.4f")
+        with c_acc2:
+            in_acc_y = st.number_input("AccY (Longitudinal)", value=float(defaults["AccY"]), step=0.05, format="%.4f")
+        with c_acc3:
+            in_acc_z = st.number_input("AccZ (Vertical)", value=float(defaults["AccZ"]), step=0.05, format="%.4f")
+
+        st.markdown("##### 2. Gyroscope Readings (rad/s or deg/s)")
+        c_gyr1, c_gyr2, c_gyr3 = st.columns(3)
+        with c_gyr1:
+            in_gyr_x = st.number_input("GyroX (Pitch Rate)", value=float(defaults["GyroX"]), step=0.01, format="%.4f")
+        with c_gyr2:
+            in_gyr_y = st.number_input("GyroY (Roll Rate)", value=float(defaults["GyroY"]), step=0.01, format="%.4f")
+        with c_gyr3:
+            in_gyr_z = st.number_input("GyroZ (Yaw Rate)", value=float(defaults["GyroZ"]), step=0.01, format="%.4f")
+
+        submitted = st.form_submit_button("Evaluate Telemetry Point", use_container_width=True)
+
+    # Reset streaming state so manual single-point evaluation is pure point-in-time
+    scorer.reset_stream_state()
+    manual_sample = {
+        "AccX": in_acc_x,
+        "AccY": in_acc_y,
+        "AccZ": in_acc_z,
+        "GyroX": in_gyr_x,
+        "GyroY": in_gyr_y,
+        "GyroZ": in_gyr_z
+    }
+    result = scorer.score_sample(manual_sample)
+
+    st.markdown("---")
+    st.markdown("### Evaluation Results")
+
+    res_col1, res_col2 = st.columns([1.2, 1.8])
+
+    with res_col1:
+        # Gauge visualization
+        score_val = result["CADA_Score"]
+        tier_val = result["Risk_Tier"]
+        tier_colors = {
+            "NORMAL": "#28a745",
+            "MODERATE": "#ffc107",
+            "HIGH": "#fd7e14",
+            "CRITICAL": "#dc3545"
+        }
+        st.markdown(f"#### Safety Tier: <span style='color:{tier_colors.get(tier_val, '#111827')}'>{tier_val}</span>", unsafe_allow_html=True)
+        st.caption(f"Score: **{score_val:.2f} / 100**")
+        fig_eval_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=score_val,
+            number={'font': {'size': 44}},
+            domain={'x': [0, 1], 'y': [0, 1]},
+            gauge={
+                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#666"},
+                'bar': {'color': tier_colors.get(tier_val, '#111827')},
+                'steps': [
+                    {'range': [0, 25], 'color': '#86efac'},
+                    {'range': [25, 50], 'color': '#fde047'},
+                    {'range': [50, 75], 'color': '#fdba74'},
+                    {'range': [75, 100], 'color': '#fca5a5'}
+                ]
+            }
+        ))
+        fig_eval_gauge.update_layout(height=240, margin=dict(l=20, r=20, t=10, b=10))
+        st.plotly_chart(fig_eval_gauge, use_container_width=True)
+
+    with res_col2:
+        m1, m2 = st.columns(2)
+        with m1:
+            st.metric("Composite CADA Score", f"{score_val:.2f} / 100")
+            st.metric("Novelty Risk (Iso_Risk)", f"{result['Iso_Risk']:.2f}")
+            st.metric("Statistical Deviation (Stat_Risk)", f"{result['Stat_Risk']:.2f}")
+        with m2:
+            st.metric("Assigned Safety Tier", tier_val)
+            st.metric("Temporal Jerk Risk", f"{result['Temporal_Risk']:.2f}")
+            st.metric("Derived Acc Magnitude", f"{result['AccMag']:.4f} g")
+
+    # Detailed breakdown table
+    st.markdown("##### Detailed Output Summary")
+    df_eval_summary = pd.DataFrame([{
+        "CADA_Score": result["CADA_Score"],
+        "Risk_Tier": result["Risk_Tier"],
+        "Iso_Risk": result["Iso_Risk"],
+        "Stat_Risk": result["Stat_Risk"],
+        "Temporal_Risk": result["Temporal_Risk"],
+        "AccMag": result["AccMag"],
+        "GyroMag": result["GyroMag"],
+        "AccMag_Change": result["AccMag_Change"],
+        "GyroMag_Change": result["GyroMag_Change"]
+    }])
+    st.dataframe(df_eval_summary, use_container_width=True)
 
