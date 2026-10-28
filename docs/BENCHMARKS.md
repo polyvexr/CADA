@@ -4,13 +4,14 @@ Performance comparison on the test dataset (`test_motion_data.csv`). Anomaly cla
 
 ## Evaluation Summary
 
-| Model | Type | Accuracy | F1 Score | ROC-AUC | Speed (ms/sample) |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **HistGradientBoosting** | Supervised | 87.7% | 0.758 | 0.887 | 0.003 ms |
-| **Random Forest** | Supervised | 85.4% | 0.720 | 0.912 | 0.015 ms |
-| **Isolation Forest** | Unsupervised | 75.6% | 0.448 | 0.760 | 0.006 ms |
-| **One-Class SVM** | Unsupervised | 67.1% | 0.442 | 0.658 | 0.014 ms |
-| **CADA (Composite)** | Hybrid | **87.1%** | **0.737** | **0.897** | 0.017 ms |
+
+| Model            | Precision  | Recall | F1 Score   | Accuracy   | ROC AUC | PR AUC | Latency (ms/sample) |
+| ---------------- | ---------- | ------ | ---------- | ---------- | ------- | ------ | ------------------- |
+| Random Forest    | 0.7313     | 0.7088 | 0.7199     | 0.8544     | 0.9120  | 0.8204 | 0.0148              |
+| Isolation Forest | 0.5543     | 0.3759 | 0.4480     | 0.7555     | 0.7598  | 0.5461 | 0.0063              |
+| One-Class SVM    | 0.4000     | 0.4939 | 0.4420     | 0.6709     | 0.6579  | 0.5000 | 0.0135              |
+| **CADA**         | **0.7952** | 0.6867 | **0.7370** | **0.8706** | 0.8965  | 0.7912 | 0.0173              |
+
 
 ## Key Points
 
